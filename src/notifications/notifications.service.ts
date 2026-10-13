@@ -6,6 +6,27 @@ import { User } from '../users/entities/user.entity.js';
 import { ListNotificationsQueryDto } from './dto/list-notifications-query.dto.js';
 import { Notification } from './entities/notification.entity.js';
 import { NotificationType } from './enums/notification-type.enum.js';
+import {
+  EmailableNotification,
+  NotificationEmailDispatcher,
+} from './notification-email.dispatcher.js';
+
+const EMAIL_NOTIFICATION_TYPES: ReadonlySet<NotificationType> = new Set([
+  NotificationType.LEASE_CREATED,
+  NotificationType.LEASE_ACTIVATED,
+  NotificationType.LEASE_TERMINATED,
+  NotificationType.LEASE_RENEWED,
+  NotificationType.LEASE_RENEWAL_REQUESTED,
+  NotificationType.LEASE_RENEWAL_REJECTED,
+  NotificationType.MAINTENANCE_CREATED,
+  NotificationType.MAINTENANCE_ASSIGNED,
+  NotificationType.MAINTENANCE_RESOLVED,
+  NotificationType.RENTAL_REQUEST_CREATED,
+  NotificationType.RENTAL_REQUEST_APPROVED,
+  NotificationType.RENTAL_REQUEST_REJECTED,
+  NotificationType.RENTAL_REQUEST_EXPIRED,
+  NotificationType.OWNER_VERIFICATION_CHANGED,
+]);
 
 interface CreateNotificationData {
   recipientId: string;
@@ -21,11 +42,38 @@ export class NotificationsService {
   constructor(
     @InjectRepository(Notification)
     private readonly notificationRepo: Repository<Notification>,
+    private readonly emailDispatcher: NotificationEmailDispatcher,
   ) {}
+
+  /**
+   * Whether a notification type is also sent by email.
+   * @param type Notification type.
+   */
+  shouldEmail(type: NotificationType): boolean {
+    return EMAIL_NOTIFICATION_TYPES.has(type);
+  }
+
+  /**
+   * Sends the email copy of notifications that were inserted outside of
+   * `create` (for example by a set-based SQL statement). Types that are not
+   * email-worthy are skipped. The notifications must already be committed.
+   * @param notifications Committed notifications, with their type.
+   */
+  emailCommitted(
+    notifications: (EmailableNotification & { type: NotificationType })[],
+  ): void {
+    this.emailDispatcher.sendNow(
+      notifications.filter((notification) =>
+        this.shouldEmail(notification.type),
+      ),
+    );
+  }
 
   /**
    * Create a new notification.
    * This method called inside a business transaction using the transaction's Manager.
+   * If the type is email-worthy, the email is sent after the transaction commits
+   * (and never if it rolls back).
    * @param manager Transaction manager used to insert the notification.
    * @param data Notification data including recipient, type, title, message,
    * and optional related entity information.
@@ -42,6 +90,8 @@ export class NotificationsService {
       relatedEntityType: data.relatedEntityType ?? null,
       relatedEntityId: data.relatedEntityId ?? null,
     });
+
+    this.queueEmail(manager, data.recipientId, data);
   }
 
   /**
@@ -71,6 +121,10 @@ export class NotificationsService {
         relatedEntityId: data.relatedEntityId ?? null,
       })),
     );
+
+    for (const recipientId of recipients) {
+      this.queueEmail(manager, recipientId, data);
+    }
   }
 
   /**
@@ -123,5 +177,19 @@ export class NotificationsService {
       { recipientId: actor.id, isRead: false },
       { isRead: true },
     );
+  }
+
+  private queueEmail(
+    manager: EntityManager,
+    recipientId: string,
+    data: Pick<CreateNotificationData, 'type' | 'title' | 'message'>,
+  ): void {
+    if (!this.shouldEmail(data.type)) return;
+
+    this.emailDispatcher.enqueue(manager, {
+      recipientId,
+      title: data.title,
+      message: data.message,
+    });
   }
 }

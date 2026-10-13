@@ -23,7 +23,14 @@ import { UnitsService } from '../units/units.service.js';
 import { User } from '../users/entities/user.entity.js';
 import { UserRole } from '../users/enums/user-role.enum.js';
 import { UsersService } from '../users/users.service.js';
-import { isRealDate } from '../common/utils/date.util.js';
+import {
+  assertEndDateNotInPast,
+  assertValidDateRange,
+  isRealDate,
+  todayIso,
+} from '../common/utils/date.util.js';
+import { RentalRequest } from '../rental-requests/entities/rental-request.entity.js';
+import { RentalRequestStatus } from '../rental-requests/enums/rental-request-status.enum.js';
 import { CreateLeaseDto } from './dto/create-lease.dto.js';
 import { ListLeasesQueryDto } from './dto/list-leases-query.dto.js';
 import { RenewLeaseDto } from './dto/renew-lease.dto.js';
@@ -39,7 +46,12 @@ import { NotificationType } from '../notifications/enums/notification-type.enum.
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { CacheInvalidationService } from '../common/cache/cache-invalidation.service.js';
 
-const LEASE_SORT_FIELDS = ['createdAt', 'startDate', 'endDate'] as const;
+const LEASE_SORT_FIELDS = [
+  'createdAt',
+  'startDate',
+  'endDate',
+  'rentAmount',
+] as const;
 
 @Injectable()
 export class LeasesService {
@@ -145,6 +157,7 @@ export class LeasesService {
 
     const [data, total] = await queryBuilder
       .orderBy(`lease.${sortBy}`, sortOrder)
+      .addOrderBy('lease.id', 'ASC')
       .skip(toSkip(query))
       .take(query.limit)
       .getManyAndCount();
@@ -171,7 +184,7 @@ export class LeasesService {
       .where('lease.tenantId = :tenantId', { tenantId })
       .andWhere('lease.unitId = :unitId', { unitId })
       .andWhere('lease.status = :status', { status: LeaseStatus.ACTIVE })
-      .andWhere('lease."endDate" >= CURRENT_DATE')
+      .andWhere('lease."endDate" >= :today', { today: todayIso() })
       .getOne();
   }
 
@@ -182,19 +195,16 @@ export class LeasesService {
    * @param actor - The user creating the lease.
    * @param dto - Lease creation data.
    * @returns The newly created lease.
-   * @throws BadRequestException If the dates are invalid or the tenant is not an active TENANT.
+   * @throws BadRequestException If the dates are invalid, `endDate` is in the
+   * past (END_DATE_IN_PAST), or the tenant is not an active TENANT.
    * @throws ForbiddenException If the actor cannot access the unit.
    * @throws ConflictException If the lease conflicts with an existing lease.
    */
   async create(actor: User, dto: CreateLeaseDto, ip?: string): Promise<Lease> {
     await this.leaseExpiration.run();
 
-    if (dto.startDate >= dto.endDate) {
-      throw new BadRequestException({
-        code: ErrorCode.INVALID_DATE_RANGE,
-        message: 'startDate must be before endDate',
-      });
-    }
+    assertValidDateRange(dto.startDate, dto.endDate);
+    assertEndDateNotInPast(dto.endDate);
 
     const unit = await this.unitsService.findForActor(actor, dto.unitId);
 
@@ -270,7 +280,8 @@ export class LeasesService {
    * @throws NotFoundException If the lease does not exist.
    * @throws ForbiddenException If the actor does not have access to the lease.
    * @throws ConflictException If the lease is not PENDING.
-   * @throws BadRequestException If the resulting dates are invalid.
+   * @throws BadRequestException If the resulting dates are invalid or a new
+   * `endDate` is in the past.
    */
   async update(actor: User, id: string, dto: UpdateLeaseDto): Promise<Lease> {
     const lease = await this.findForActor(actor, id);
@@ -284,12 +295,9 @@ export class LeasesService {
 
     const startDate = dto.startDate ?? lease.startDate;
     const endDate = dto.endDate ?? lease.endDate;
-    if (startDate >= endDate) {
-      throw new BadRequestException({
-        code: ErrorCode.INVALID_DATE_RANGE,
-        message: 'startDate must be before endDate',
-      });
-    }
+
+    assertValidDateRange(startDate, endDate);
+    if (dto.endDate !== undefined) assertEndDateNotInPast(dto.endDate);
 
     this.leaseRepo.merge(lease, { ...dto, startDate, endDate });
     return this.leaseRepo.save(lease);
@@ -297,16 +305,22 @@ export class LeasesService {
 
   /**
    * Activates a pending lease and marks its unit as rented.
+   * ACTIVE means "the period is running today", so a lease can only be
+   * activated from its `startDate` until its `endDate` (inclusive).
+   * Every other PENDING rental request of the unit whose period overlaps the
+   * lease is rejected in the same transaction, and its tenant is notified.
    * The operation runs inside a database transaction and uses pessimistic
-   * locking to prevent concurrent modifications to the lease and unit.
+   * locking to prevent concurrent modifications to the lease, the competing
+   * requests and the unit (always locked in that order, like `approve`).
    * The cache is invalidated only after the transaction has committed.
    * @param actor - The user activating the lease.
    * @param id - The unique identifier of the lease.
    * @returns The activated lease.
    * @throws NotFoundException If the lease, unit or property does not exist.
    * @throws ForbiddenException If the actor cannot manage the property.
-   * @throws ConflictException If the lease is not PENDING or the unit
-   * is not AVAILABLE.
+   * @throws ConflictException If the lease is not PENDING, its period has
+   * ended (LEASE_PERIOD_ENDED) or has not started yet (LEASE_NOT_STARTED),
+   * or the unit is not AVAILABLE.
    */
   async activate(actor: User, id: string, ip?: string): Promise<Lease> {
     await this.leaseExpiration.run();
@@ -357,6 +371,34 @@ export class LeasesService {
         });
       }
 
+      const today = todayIso();
+
+      if (lease.endDate < today) {
+        throw new ConflictException({
+          code: ErrorCode.LEASE_PERIOD_ENDED,
+          message: `The lease period ended on ${lease.endDate}; terminate it and create a new lease`,
+        });
+      }
+
+      if (lease.startDate > today) {
+        throw new ConflictException({
+          code: ErrorCode.LEASE_NOT_STARTED,
+          message: `The lease starts on ${lease.startDate}; it can only be activated from its start date`,
+        });
+      }
+
+      const competingRequests = await manager
+        .createQueryBuilder(RentalRequest, 'request')
+        .setLock('pessimistic_write')
+        .where('request.unitId = :unitId', { unitId: lease.unitId })
+        .andWhere('request.status = :status', {
+          status: RentalRequestStatus.PENDING,
+        })
+        .andWhere('request.startDate <= :endDate', { endDate: lease.endDate })
+        .andWhere('request.endDate >= :startDate', { startDate: lease.startDate })
+        .orderBy('request.id', 'ASC')
+        .getMany();
+
       const lockedUnit = await manager
         .createQueryBuilder(Unit, 'unit')
         .setLock('pessimistic_write')
@@ -375,6 +417,33 @@ export class LeasesService {
 
       await manager.save(lease);
       await manager.save(lockedUnit);
+
+      for (const request of competingRequests) {
+        request.status = RentalRequestStatus.REJECTED;
+        await manager.save(request);
+
+        await this.notifications.create(manager, {
+          recipientId: request.tenantId,
+          type: NotificationType.RENTAL_REQUEST_REJECTED,
+          title: 'Rental request rejected',
+          message: `Your rental request for unit ${lockedUnit.unitNumber} (${request.startDate} to ${request.endDate}) was rejected because the unit was rented to another tenant for an overlapping period.`,
+          relatedEntityType: 'RentalRequest',
+          relatedEntityId: request.id,
+        });
+
+        await this.auditLogs.record(manager, {
+          userId: actor.id,
+          action: AuditAction.RENTAL_REQUEST_REJECTED,
+          entity: 'RentalRequest',
+          entityId: request.id,
+          metadata: {
+            reason: 'COMPETING_LEASE_ACTIVATED',
+            leaseId: lease.id,
+            unitId: lockedUnit.id,
+          },
+          ipAddress: ip,
+        });
+      }
 
       await this.notifications.create(manager, {
         recipientId: lease.tenantId,

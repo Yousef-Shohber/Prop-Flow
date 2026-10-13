@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDateString, IsOptional, IsUUID } from 'class-validator';
+import { IsOptional, IsUUID } from 'class-validator';
+import { IsDateOnly } from '../../common/validators/is-date-only.decorator.js';
 import { TransitionNotesDto } from './transition-notes.dto.js';
 
 export class AssignMaintenanceDto extends TransitionNotesDto {
@@ -9,6 +10,6 @@ export class AssignMaintenanceDto extends TransitionNotesDto {
 
   @ApiPropertyOptional({ example: '2026-12-01' })
   @IsOptional()
-  @IsDateString()
+  @IsDateOnly()
   scheduledDate?: string;
 }

@@ -14,6 +14,7 @@ import {
 } from '@nestjs/common';
 import {
   ApiBearerAuth,
+  ApiConflictResponse,
   ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -26,6 +27,8 @@ import type { Request } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator.js';
 import { Roles } from '../common/decorators/roles.decorator.js';
 import { ListUsersQueryDto } from './dto/list-users-query.dto.js';
+import { SelectRoleDto } from './dto/select-role.dto.js';
+import { UpdateOwnerVerificationDto } from './dto/update-owner-verification.dto.js';
 import { UpdateProfileDto } from './dto/update-profile.dto.js';
 import { UpdateUserRoleDto } from './dto/update-user-role.dto.js';
 import { UpdateUserStatusDto } from './dto/update-user-status.dto.js';
@@ -77,6 +80,22 @@ export class UsersController {
     @Body() dto: UpdateProfileDto,
   ): Promise<User> {
     return this.users.updateProfile(user, dto);
+  }
+
+  @Patch('me/role')
+  @ApiOperation({
+    summary: 'Choose TENANT or OWNER once (for a Google sign-up)',
+    description:
+      'Only allowed while `roleSelected` is false. Choosing OWNER does not publish anything: an admin still has to verify the owner.',
+  })
+  @ApiOkResponse({ type: UserResponseDto })
+  @ApiConflictResponse({ description: 'The role was already selected' })
+  selectRole(
+    @CurrentUser() user: User,
+    @Body() dto: SelectRoleDto,
+    @Req() req: Request,
+  ): Promise<User> {
+    return this.users.selectRole(user, dto.role, req.ip);
   }
 
   @Post('me/avatar')
@@ -140,6 +159,25 @@ export class UsersController {
     @Req() req: Request,
   ): Promise<User> {
     return this.users.setStatus(id, dto.isActive, actor, req.ip);
+  }
+
+  @Patch(':id/owner-verification')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary:
+      'Verify or un-verify an OWNER, which publishes or hides their listings (ADMIN)',
+  })
+  @ApiOkResponse({ type: UserResponseDto })
+  @ApiForbiddenResponse({ description: 'Requires ADMIN role' })
+  @ApiNotFoundResponse({ description: 'User not found' })
+  @ApiUnprocessableEntityResponse({ description: 'The user is not an OWNER' })
+  updateOwnerVerification(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateOwnerVerificationDto,
+    @CurrentUser() actor: User,
+    @Req() req: Request,
+  ): Promise<User> {
+    return this.users.setOwnerVerified(id, dto.ownerVerified, actor, req.ip);
   }
 
   @Patch(':id/role')

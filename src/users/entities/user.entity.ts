@@ -41,6 +41,12 @@ export class User {
   @Column({ type: 'enum', enum: UserRole, default: UserRole.TENANT })
   role: UserRole;
 
+  @Column({ type: 'boolean', default: true })
+  roleSelected: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  ownerVerified: boolean;
+
   @Column({ type: 'jsonb', default: userAvatar })
   avatar: ImageRef;
 

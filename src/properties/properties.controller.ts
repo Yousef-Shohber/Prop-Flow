@@ -121,8 +121,9 @@ export class PropertiesController {
     @CurrentUser() actor: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdatePropertyDto,
+    @Req() req: Request,
   ): Promise<Property> {
-    return this.properties.update(actor, id, dto);
+    return this.properties.update(actor, id, dto, req.ip);
   }
 
   @Delete(':id')

@@ -1,5 +1,6 @@
 import { ApiPropertyOptional } from '@nestjs/swagger';
-import { IsDateString, IsOptional } from 'class-validator';
+import { IsOptional } from 'class-validator';
+import { IsDateOnly } from '../../common/validators/is-date-only.decorator.js';
 
 export class ApproveLeaseRenewalRequestDto {
   @ApiPropertyOptional({
@@ -8,6 +9,6 @@ export class ApproveLeaseRenewalRequestDto {
       'Grant a different end date than the one requested; defaults to the requested date',
   })
   @IsOptional()
-  @IsDateString()
+  @IsDateOnly()
   endDate?: string;
 }

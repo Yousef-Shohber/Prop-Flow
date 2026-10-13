@@ -14,6 +14,8 @@ import {
   toSkip,
 } from '../common/pagination/pagination.utils.js';
 import { canManageProperty } from '../common/policies/policy.utils.js';
+import { getChangedFields } from '../common/utils/diff.util.js';
+import { isOwnerVerified } from '../common/utils/owner-verification.util.js';
 import { PropertiesService } from '../properties/properties.service.js';
 import { User } from '../users/entities/user.entity.js';
 import { UserRole } from '../users/enums/user-role.enum.js';
@@ -43,6 +45,7 @@ const UNIT_SORT_FIELDS = [
   'unitNumber',
   'area',
   'bedrooms',
+  'rentAmount',
 ] as const;
 
 const MANUAL_TRANSITIONS: Partial<Record<UnitStatus, UnitStatus>> = {
@@ -91,8 +94,9 @@ export class UnitsService {
   /**
    * Retrieves a unit after verifying that the actor has permission
    * to manage the property that owns the unit.
-   * A TENANT can see AVAILABLE units, plus any unit on which they hold a
-   * PENDING or ACTIVE lease (their own home); anything else is a 404.
+   * A TENANT can see AVAILABLE units of verified owners, plus any unit on
+   * which they hold a PENDING or ACTIVE lease (their own home); anything else
+   * is a 404.
    * @param actor - The user requesting access.
    * @param id - The unique ID of the unit.
    * @returns The unit if the actor is authorized.
@@ -105,10 +109,11 @@ export class UnitsService {
     const unit = await this.findOne(id);
 
     if (actor.role === UserRole.TENANT) {
-      if (
-        unit.status !== UnitStatus.AVAILABLE &&
-        !(await this.hasCurrentLease(actor.id, unit.id))
-      ) {
+      const published =
+        unit.status === UnitStatus.AVAILABLE &&
+        (await isOwnerVerified(this.dataSource.manager, unit.property.ownerId));
+
+      if (!published && !(await this.hasCurrentLease(actor.id, unit.id))) {
         throw new NotFoundException({
           code: ErrorCode.UNIT_NOT_FOUND,
           message: 'Unit not found',
@@ -166,9 +171,12 @@ export class UnitsService {
       .andWhere('property."deletedAt" IS NULL');
 
     if (actor.role === UserRole.TENANT) {
-      queryBuilder.andWhere('unit.status = :status', {
-        status: UnitStatus.AVAILABLE,
-      });
+      queryBuilder
+        .innerJoin('property.owner', 'owner')
+        .andWhere('owner.ownerVerified = true')
+        .andWhere('unit.status = :status', {
+          status: UnitStatus.AVAILABLE,
+        });
     } else {
       if (actor.role !== UserRole.ADMIN) {
         queryBuilder.andWhere('property.ownerId = :ownerId', {
@@ -212,6 +220,7 @@ export class UnitsService {
 
     const [data, total] = await queryBuilder
       .orderBy(`unit.${sortBy}`, sortOrder)
+      .addOrderBy('unit.id', 'ASC')
       .skip(toSkip(query))
       .take(query.limit)
       .getManyAndCount();
@@ -283,22 +292,69 @@ export class UnitsService {
 
   /**
    * Updates a unit after verifying that the actor has permission to manage its property.
-   * A RENTED unit cannot be updated.
+   * A RENTED unit cannot be updated (re-checked under the row lock, so a lease
+   * activated meanwhile is respected). Only the fields that really change are
+   * saved, and a UNIT_UPDATED audit entry with the `before`/`after` of each
+   * changed field (`rentAmount` included) is written in the same transaction.
+   * A request that changes nothing writes nothing.
+   * The cache is invalidated after the commit.
    * @param actor - The user updating the unit.
    * @param id - The unique ID of the unit.
    * @param dto - The fields to update.
+   * @param ip - The user IP performing the action.
    * @returns The updated unit.
    * @throws NotFoundException If the unit does not exist.
    * @throws ForbiddenException If the actor cannot manage the unit.
    * @throws ConflictException If the unit is currently RENTED.
    */
-  async update(actor: User, id: string, dto: UpdateUnitDto): Promise<Unit> {
+  async update(
+    actor: User,
+    id: string,
+    dto: UpdateUnitDto,
+    ip?: string,
+  ): Promise<Unit> {
     const unit = await this.findForActor(actor, id);
     this.assertNotRented(unit, 'updated');
 
-    this.unitRepo.merge(unit, dto);
-    const saved = await this.unitRepo.save(unit);
-    await this.cache.invalidateUnitsAndDashboard();
+    const { saved, changed } = await this.dataSource.transaction(
+      async (manager) => {
+        const current = await manager
+          .createQueryBuilder(Unit, 'unit')
+          .setLock('pessimistic_write')
+          .where('unit.id = :id', { id: unit.id })
+          .getOne();
+
+        if (!current) {
+          throw new NotFoundException({
+            code: ErrorCode.UNIT_NOT_FOUND,
+            message: 'Unit not found',
+          });
+        }
+
+        this.assertNotRented(current, 'updated');
+
+        const changes = getChangedFields(current, dto);
+        if (!Object.keys(changes).length) {
+          return { saved: current, changed: false };
+        }
+
+        manager.merge(Unit, current, dto);
+        const result = await manager.save(Unit, current);
+
+        await this.auditLogsService.record(manager, {
+          userId: actor.id,
+          action: AuditAction.UNIT_UPDATED,
+          entity: 'Unit',
+          entityId: current.id,
+          metadata: { propertyId: current.propertyId, changes },
+          ipAddress: ip,
+        });
+
+        return { saved: result, changed: true };
+      },
+    );
+
+    if (changed) await this.cache.invalidateUnitsAndDashboard();
     return saved;
   }
 

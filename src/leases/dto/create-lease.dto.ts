@@ -1,13 +1,8 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
-import {
-  IsDateString,
-  IsOptional,
-  IsString,
-  IsUUID,
-  MaxLength,
-} from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 import { trim } from '../../common/utils/transform.util.js';
+import { IsDateOnly } from '../../common/validators/is-date-only.decorator.js';
 
 export class CreateLeaseDto {
   @ApiProperty()
@@ -19,11 +14,11 @@ export class CreateLeaseDto {
   unitId: string;
 
   @ApiProperty({ example: '2026-01-01' })
-  @IsDateString()
+  @IsDateOnly()
   startDate: string;
 
   @ApiProperty({ example: '2026-12-31' })
-  @IsDateString()
+  @IsDateOnly()
   endDate: string;
 
   @ApiPropertyOptional()

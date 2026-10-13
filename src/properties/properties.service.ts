@@ -19,6 +19,9 @@ import {
   toSkip,
 } from '../common/pagination/pagination.utils.js';
 import { canManageProperty } from '../common/policies/policy.utils.js';
+import { getChangedFields } from '../common/utils/diff.util.js';
+import { containsPattern } from '../common/utils/like.util.js';
+import { isOwnerVerified } from '../common/utils/owner-verification.util.js';
 import { CacheInvalidationService } from '../common/cache/cache-invalidation.service.js';
 import { PROPERTY_MAX_IMAGES } from '../common/uploads/upload.constants.js';
 import { UploadService } from '../common/uploads/upload.service.js';
@@ -79,16 +82,27 @@ export class PropertiesService {
 
   /**
    * Retrieves a property by ID and returns available units for tenants.
+   * A tenant only sees properties of verified owners (see `ownerVerified`).
    * @param actor The authenticated user requesting the property.
    * @param id Property ID.
    * @returns The property, with available units for tenants.
-   * @throws NotFoundException If the property does not exist.
+   * @throws NotFoundException If the property does not exist, or a tenant asks
+   * for a property whose owner is not verified.
    * @throws ForbiddenException If the actor does not have access to manage the property.
    */
   async findForActor(actor: User, id: string) {
     const property = await this.findOne(id);
 
     if (actor.role === UserRole.TENANT) {
+      if (
+        !(await isOwnerVerified(this.propertyRepo.manager, property.ownerId))
+      ) {
+        throw new NotFoundException({
+          code: ErrorCode.PROPERTY_NOT_FOUND,
+          message: 'Property not found',
+        });
+      }
+
       const units = await this.unitsRepo.find({
         where: { propertyId: property.id, status: UnitStatus.AVAILABLE },
       });
@@ -120,12 +134,13 @@ export class PropertiesService {
       'createdAt',
     );
     const base = this.baseWhere(actor, query);
+    const pattern = query.search ? ILike(containsPattern(query.search)) : null;
 
     const where: FindOptionsWhere<Property> | FindOptionsWhere<Property>[] =
-      query.search
+      pattern
         ? [
-            { ...base, name: ILike(`%${query.search}%`) },
-            { ...base, address: ILike(`%${query.search}%`) },
+            { ...base, name: pattern },
+            { ...base, address: pattern },
           ]
         : base;
 
@@ -212,9 +227,14 @@ export class PropertiesService {
 
   /**
    * Updates an existing property.
+   * The property row is locked, only the fields that really change are saved,
+   * and a PROPERTY_UPDATED audit entry with the `before`/`after` of each
+   * changed field is written in the same transaction. A request that changes
+   * nothing writes nothing. The cache is invalidated after the commit.
    * @param actor The authenticated user performing the update.
    * @param id Property ID.
    * @param dto Property update data.
+   * @param ip The user IP performing the action.
    * @returns The updated property.
    * @throws NotFoundException If the property does not exist.
    * @throws ForbiddenException If the actor does not have access to it.
@@ -223,12 +243,46 @@ export class PropertiesService {
     actor: User,
     id: string,
     dto: UpdatePropertyDto,
+    ip?: string,
   ): Promise<Property> {
     const property = await this.findForActor(actor, id);
-    this.propertyRepo.merge(property, dto);
-    const saved = await this.propertyRepo.save(property);
 
-    await this.cache.invalidateDashboard();
+    const { saved, changed } = await this.dataSource.transaction(
+      async (manager) => {
+        const current = await manager.findOne(Property, {
+          where: { id: property.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+
+        if (!current) {
+          throw new NotFoundException({
+            code: ErrorCode.PROPERTY_NOT_FOUND,
+            message: 'Property not found',
+          });
+        }
+
+        const changes = getChangedFields(current, dto);
+        if (!Object.keys(changes).length) {
+          return { saved: current, changed: false };
+        }
+
+        manager.merge(Property, current, dto);
+        const result = await manager.save(Property, current);
+
+        await this.auditLogsService.record(manager, {
+          userId: actor.id,
+          action: AuditAction.PROPERTY_UPDATED,
+          entity: 'Property',
+          entityId: current.id,
+          metadata: { changes },
+          ipAddress: ip,
+        });
+
+        return { saved: result, changed: true };
+      },
+    );
+
+    if (changed) await this.cache.invalidateDashboard();
     return saved;
   }
 
@@ -461,6 +515,7 @@ export class PropertiesService {
   ): FindOptionsWhere<Property> {
     const where: FindOptionsWhere<Property> = {};
     if (actor.role === UserRole.OWNER) where.ownerId = actor.id;
+    if (actor.role === UserRole.TENANT) where.owner = { ownerVerified: true };
     if (query.city) where.city = query.city;
     if (query.propertyType) where.propertyType = query.propertyType;
     return where;

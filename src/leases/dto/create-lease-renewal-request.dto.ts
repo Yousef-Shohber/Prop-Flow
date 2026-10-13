@@ -1,11 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import {
-  IsDateString,
-  IsOptional,
-  IsString,
-  IsUUID,
-  MaxLength,
-} from 'class-validator';
+import { IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import { IsDateOnly } from '../../common/validators/is-date-only.decorator.js';
 
 export class CreateLeaseRenewalRequestDto {
   @ApiProperty({ description: 'The tenant\'s own ACTIVE lease' })
@@ -16,7 +11,7 @@ export class CreateLeaseRenewalRequestDto {
     example: '2027-12-31',
     description: 'The end date the tenant asks for; must be after the lease end date',
   })
-  @IsDateString()
+  @IsDateOnly()
   endDate: string;
 
   @ApiPropertyOptional({ maxLength: 1000 })

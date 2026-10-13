@@ -117,8 +117,9 @@ export class UnitsController {
     @CurrentUser() actor: User,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateUnitDto,
+    @Req() req: Request,
   ): Promise<Unit> {
-    return this.unitsService.update(actor, id, dto);
+    return this.unitsService.update(actor, id, dto, req.ip);
   }
 
   @Delete('units/:id')

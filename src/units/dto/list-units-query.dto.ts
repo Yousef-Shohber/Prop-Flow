@@ -6,8 +6,10 @@ import {
   IsNumber,
   IsOptional,
   IsUUID,
+  Max,
   Min,
 } from 'class-validator';
+import { UNIT_AREA_MAX } from '../../common/constants/validation.constants.js';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto.js';
 import { UnitStatus } from '../enums/unit-status.enum.js';
 
@@ -27,15 +29,17 @@ export class ListUnitsQueryDto extends PaginationQueryDto {
   @ApiPropertyOptional()
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @Min(0)
+  @Max(UNIT_AREA_MAX)
   minArea?: number;
 
   @ApiPropertyOptional()
   @IsOptional()
   @Type(() => Number)
-  @IsNumber()
+  @IsInt()
   @Min(0)
+  @Max(UNIT_AREA_MAX)
   maxArea?: number;
 
   @ApiPropertyOptional()

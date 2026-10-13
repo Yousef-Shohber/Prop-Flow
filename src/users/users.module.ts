@@ -4,9 +4,14 @@ import { User } from './entities/user.entity.js';
 import { UsersController } from './users.controller.js';
 import { UsersService } from './users.service.js';
 import { AuditLogsModule } from '../audit-logs/audit-logs.module.js';
+import { NotificationsModule } from '../notifications/notifications.module.js';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([User]), AuditLogsModule],
+  imports: [
+    TypeOrmModule.forFeature([User]),
+    AuditLogsModule,
+    NotificationsModule,
+  ],
   controllers: [UsersController],
   providers: [UsersService],
   exports: [UsersService],

@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -32,13 +31,19 @@ import { ListRentalRequestsQueryDto } from './dto/list-rental-requests-query.dto
 import { RentalRequestResponseDto } from './dto/rental-request-response.dto.js';
 import { RentalRequest } from './entities/rental-request.entity.js';
 import { RentalRequestStatus } from './enums/rental-request-status.enum.js';
-import { assertValidDateRange, todayIso } from '../common/utils/date.util.js';
+import {
+  assertEndDateNotInPast,
+  assertValidDateRange,
+  todayIso,
+} from '../common/utils/date.util.js';
 import { ErrorCode } from '../common/errors/error-code.enum.js';
+import { isOwnerVerified } from '../common/utils/owner-verification.util.js';
 
 const RENTAL_REQUEST_SORT_FIELDS = [
   'createdAt',
   'startDate',
   'endDate',
+  'rentAmount',
 ] as const;
 
 @Injectable()
@@ -148,6 +153,7 @@ export class RentalRequestsService {
 
     const [data, total] = await queryBuilder
       .orderBy(`request.${sortBy}`, sortOrder)
+      .addOrderBy('request.id', 'ASC')
       .skip(toSkip(query))
       .take(query.limit)
       .getManyAndCount();
@@ -181,13 +187,7 @@ export class RentalRequestsService {
     await this.leaseExpiration.run();
 
     assertValidDateRange(dto.startDate, dto.endDate);
-
-    if (dto.endDate < todayIso()) {
-      throw new BadRequestException({
-        code: ErrorCode.END_DATE_IN_PAST,
-        message: 'endDate must not be in the past',
-      });
-    }
+    assertEndDateNotInPast(dto.endDate);
 
     const unit = await this.unitRepo.findOne({
       where: { id: dto.unitId },
@@ -195,6 +195,13 @@ export class RentalRequestsService {
     });
 
     if (!unit?.property) {
+      throw new NotFoundException({
+        code: ErrorCode.UNIT_NOT_FOUND,
+        message: 'Unit not found',
+      });
+    }
+
+    if (!(await isOwnerVerified(this.dataSource.manager, unit.property.ownerId))) {
       throw new NotFoundException({
         code: ErrorCode.UNIT_NOT_FOUND,
         message: 'Unit not found',

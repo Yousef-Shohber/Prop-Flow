@@ -20,6 +20,18 @@ export class UserResponseDto {
 
   @ApiProperty({ enum: UserRole }) role: UserRole;
 
+  @ApiProperty({
+    description:
+      'false until a Google sign-up has chosen TENANT or OWNER (PATCH /users/me/role)',
+  })
+  roleSelected: boolean;
+
+  @ApiProperty({
+    description:
+      'OWNER only: reviewed by an admin. Unverified owners are not published to tenants',
+  })
+  ownerVerified: boolean;
+
   @ApiProperty({ nullable: true, type: ImageRefDto }) avatar: ImageRefDto;
 
   @ApiProperty() isActive: boolean;

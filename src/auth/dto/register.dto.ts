@@ -11,7 +11,10 @@ import {
   MinLength,
 } from 'class-validator';
 import { normalizeEmail, trim } from '../../common/utils/transform.util.js';
-import { UserRole } from '../../users/enums/user-role.enum.js';
+import {
+  SELF_SELECTABLE_ROLES,
+  UserRole,
+} from '../../users/enums/user-role.enum.js';
 
 export class RegisterDto {
   @ApiProperty({ maxLength: 100 })
@@ -48,7 +51,7 @@ export class RegisterDto {
   })
   phone?: string;
 
-  @ApiProperty({ enum: [UserRole.TENANT, UserRole.OWNER] })
-  @IsIn([UserRole.TENANT, UserRole.OWNER])
+  @ApiProperty({ enum: SELF_SELECTABLE_ROLES })
+  @IsIn(SELF_SELECTABLE_ROLES)
   role: UserRole;
 }

@@ -24,11 +24,17 @@ const OTP_COPY: Record<
   },
 };
 
+export interface NotificationEmail {
+  title: string;
+  message: string;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private readonly transporter: Transporter;
   private readonly from: string;
+  private readonly appUrl: string;
   private readonly templateDir = join(import.meta.dirname, 'templates');
 
   constructor(config: ConfigService) {
@@ -44,6 +50,7 @@ export class EmailService {
         : {}),
     });
     this.from = config.getOrThrow<string>('MAIL_FROM');
+    this.appUrl = config.getOrThrow<string>('FRONTEND_URL');
   }
 
   /**
@@ -73,6 +80,47 @@ export class EmailService {
     } catch (error) {
       this.logger.error(
         `Failed to send ${purpose} email`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  /**
+   * Sends the email copy of an in-app notification.
+   * Like `sendOtp`, this never throws: a mail failure is logged and must not
+   * affect the business operation that triggered it.
+   * @param to - Recipient email address.
+   * @param firstName - Recipient first name, used in the greeting.
+   * @param notification - The notification title and message.
+   * @returns A promise that resolves when the sending attempt completes.
+   */
+  async sendNotification(
+    to: string,
+    firstName: string,
+    notification: NotificationEmail,
+  ): Promise<void> {
+    try {
+      const html = await ejs.renderFile(
+        join(this.templateDir, 'notification.ejs'),
+        {
+          appName: APP_NAME,
+          appUrl: this.appUrl,
+          firstName,
+          title: notification.title,
+          message: notification.message,
+        },
+      );
+
+      await this.transporter.sendMail({
+        from: this.from,
+        to,
+        subject: `${APP_NAME}: ${notification.title}`.replace(/[\r\n]+/g, ' '),
+        text: `${notification.title}\n\n${notification.message}\n\n${this.appUrl}`,
+        html: html as string,
+      });
+    } catch (error) {
+      this.logger.error(
+        'Failed to send notification email',
         error instanceof Error ? error.stack : String(error),
       );
     }

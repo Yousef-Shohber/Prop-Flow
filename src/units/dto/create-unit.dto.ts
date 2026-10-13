@@ -3,14 +3,17 @@ import { Transform } from 'class-transformer';
 import {
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
-  IsPositive,
   IsString,
   Max,
   MaxLength,
   Min,
 } from 'class-validator';
+import {
+  DESCRIPTION_MAX_LENGTH,
+  UNIT_AREA_MAX,
+  UNIT_AREA_MIN,
+} from '../../common/constants/validation.constants.js';
 import { trim } from '../../common/utils/transform.util.js';
 
 export class CreateUnitDto {
@@ -28,9 +31,14 @@ export class CreateUnitDto {
   @Max(200)
   floor?: number;
 
-  @ApiProperty()
-  @IsNumber()
-  @IsPositive()
+  @ApiProperty({
+    description: 'Whole square metres',
+    minimum: UNIT_AREA_MIN,
+    maximum: UNIT_AREA_MAX,
+  })
+  @IsInt()
+  @Min(UNIT_AREA_MIN)
+  @Max(UNIT_AREA_MAX)
   area: number;
 
   @ApiProperty()
@@ -51,9 +59,10 @@ export class CreateUnitDto {
   @Max(2_000_000_000)
   rentAmount: number;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ maxLength: DESCRIPTION_MAX_LENGTH })
   @IsOptional()
   @Transform(trim)
   @IsString()
+  @MaxLength(DESCRIPTION_MAX_LENGTH)
   description?: string;
 }

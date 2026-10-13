@@ -9,6 +9,7 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { DESCRIPTION_MAX_LENGTH } from '../../common/constants/validation.constants.js';
 import { trim } from '../../common/utils/transform.util.js';
 import { PropertyType } from '../enums/property-type.enum.js';
 import { InitialUnitDto } from './initial-unit.dto.js';
@@ -21,10 +22,11 @@ export class CreatePropertyDto {
   @MaxLength(150)
   name: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ maxLength: DESCRIPTION_MAX_LENGTH })
   @IsOptional()
   @Transform(trim)
   @IsString()
+  @MaxLength(DESCRIPTION_MAX_LENGTH)
   description?: string;
 
   @ApiProperty({ enum: PropertyType })

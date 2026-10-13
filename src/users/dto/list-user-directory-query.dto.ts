@@ -2,6 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
 import { PaginationQueryDto } from '../../common/pagination/pagination-query.dto.js';
+import { SEARCH_MAX_LENGTH } from '../../common/constants/validation.constants.js';
 import { trim } from '../../common/utils/transform.util.js';
 import { UserRole } from '../enums/user-role.enum.js';
 
@@ -14,10 +15,11 @@ export class ListUserDirectoryQueryDto extends PaginationQueryDto {
 
   @ApiPropertyOptional({
     description: 'Matches first name, last name, or email',
+    maxLength: SEARCH_MAX_LENGTH,
   })
   @IsOptional()
   @Transform(trim)
   @IsString()
-  @MaxLength(150)
+  @MaxLength(SEARCH_MAX_LENGTH)
   search?: string;
 }

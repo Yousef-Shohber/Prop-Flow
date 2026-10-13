@@ -3,4 +3,5 @@ export enum RentalRequestStatus {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
   CANCELLED = 'CANCELLED',
+  EXPIRED = 'EXPIRED',
 }

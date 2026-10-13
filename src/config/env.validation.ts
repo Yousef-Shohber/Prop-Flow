@@ -40,6 +40,7 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASSWORD: z.string().optional(),
   MAIL_FROM: z.string().min(1),
+  EMAIL_NOTIFICATIONS_ENABLED: z.stringbool().default(true),
   OTP_SECRET: z.string().min(32),
 
   CLOUDINARY_CLOUD_NAME: z.string().min(1),
@@ -49,6 +50,18 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1),
   GOOGLE_CLIENT_SECRET: z.string().min(1),
   GOOGLE_CALLBACK_URL: z.string().url(),
+
+  APP_TIMEZONE: z
+    .string()
+    .default('Africa/Cairo')
+    .refine((value) => {
+      try {
+        new Intl.DateTimeFormat('en-CA', { timeZone: value });
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'must be a valid IANA timezone, e.g. Africa/Cairo'),
 });
 
 type Env = z.infer<typeof envSchema>;
