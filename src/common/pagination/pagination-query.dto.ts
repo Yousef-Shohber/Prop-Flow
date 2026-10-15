@@ -15,13 +15,13 @@ export class PaginationQueryDto {
   @Min(1)
   page: number = 1;
 
-  @ApiPropertyOptional({ default: 20, minimum: 1, maximum: 100 })
+  @ApiPropertyOptional({ default: 10, minimum: 1, maximum: 100 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(100)
-  limit: number = 20;
+  limit: number = 10;
 
   @ApiPropertyOptional({
     description: 'Field to sort by (whitelisted per resource)',

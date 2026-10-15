@@ -202,21 +202,35 @@ export class UsersService {
 
   /**
    * Links a Google account to an existing user.
+   * If the existing account's email was never verified, whoever registered it
+   * never proved they own that address (they may have registered someone
+   * else's email with a password they know). Google has just proven the real
+   * owner, so everything the registrant set is discarded: the password,
+   * name, phone and the chosen role. The account then behaves like a fresh
+   * Google sign-up (`roleSelected = false`). Without this, the registrant's
+   * password would keep working on the real owner's account.
    * @param user - The user to link the Google account to.
-   * @param googleId - The unique Google account ID.
-   * @param avatar - The user's Google profile image.
+   * @param profile - The Google profile (verified by Google).
    * @returns The updated user.
    */
-  async linkGoogleAccount(
-    user: User,
-    googleId: string,
-    avatar: ImageRef,
-  ): Promise<User> {
-    user.googleId = googleId;
+  async linkGoogleAccount(user: User, profile: GoogleProfile): Promise<User> {
+    const wasUnverified = !user.isEmailVerified;
+
+    user.googleId = profile.googleId;
     user.isEmailVerified = true;
 
     if (user.avatar.source === 'default') {
-      user.avatar = avatar;
+      user.avatar = profile.avatar;
+    }
+
+    if (wasUnverified) {
+      user.passwordHash = null;
+      user.firstName = profile.firstName;
+      user.lastName = profile.lastName;
+      user.phone = null;
+      user.role = UserRole.TENANT;
+      user.roleSelected = false;
+      user.ownerVerified = false;
     }
 
     return this.userRepo.save(user);

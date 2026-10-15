@@ -180,11 +180,7 @@ export class AuthService {
           });
         }
 
-        user = await this.usersService.linkGoogleAccount(
-          existing,
-          profile.googleId,
-          profile.avatar,
-        );
+        user = await this.usersService.linkGoogleAccount(existing, profile);
       } else {
         user = await this.usersService.createFromGoogle(profile);
       }
