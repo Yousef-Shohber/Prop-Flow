@@ -157,7 +157,7 @@ export class UnitsService {
         `Units cache read failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    if (cached) return cached;
+    if (cached) return new Paginated(cached.data, cached.meta);
 
     const { sortBy, sortOrder } = resolveSort(
       query,
