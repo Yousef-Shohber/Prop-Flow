@@ -201,7 +201,9 @@ export class RentalRequestsService {
       });
     }
 
-    if (!(await isOwnerVerified(this.dataSource.manager, unit.property.ownerId))) {
+    if (
+      !(await isOwnerVerified(this.dataSource.manager, unit.property.ownerId))
+    ) {
       throw new NotFoundException({
         code: ErrorCode.UNIT_NOT_FOUND,
         message: 'Unit not found',
@@ -307,17 +309,17 @@ export class RentalRequestsService {
     await this.leaseExpiration.run();
 
     const requestId = await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockRequest(manager, id);
-      const unit = await this.loadManagedUnit(manager, actor, request);
+      const lockRequest = await this.lockRequest(manager, id);
+      const unit = await this.loadManagedUnit(manager, actor, lockRequest);
 
-      if (request.status !== RentalRequestStatus.PENDING) {
+      if (lockRequest.status !== RentalRequestStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.RENTAL_REQUEST_NOT_PENDING,
           message: 'Only a PENDING rental request can be approved',
         });
       }
 
-      if (request.endDate < todayIso()) {
+      if (lockRequest.endDate < todayIso()) {
         throw new ConflictException({
           code: ErrorCode.RENTAL_REQUEST_PERIOD_ENDED,
           message: 'The requested period has already ended',
@@ -338,7 +340,7 @@ export class RentalRequestsService {
       }
 
       const tenant = await manager.findOne(User, {
-        where: { id: request.tenantId },
+        where: { id: lockRequest.tenantId },
       });
 
       if (!tenant || !tenant.isActive || tenant.role !== UserRole.TENANT) {
@@ -352,8 +354,8 @@ export class RentalRequestsService {
         await this.hasLeaseConflict(
           manager,
           unit.id,
-          request.startDate,
-          request.endDate,
+          lockRequest.startDate,
+          lockRequest.endDate,
         )
       ) {
         throw new ConflictException({
@@ -363,36 +365,36 @@ export class RentalRequestsService {
       }
 
       const lease = manager.create(Lease, {
-        tenantId: request.tenantId,
-        unitId: request.unitId,
-        startDate: request.startDate,
-        endDate: request.endDate,
+        tenantId: lockRequest.tenantId,
+        unitId: lockRequest.unitId,
+        startDate: lockRequest.startDate,
+        endDate: lockRequest.endDate,
         notes: null,
         status: LeaseStatus.PENDING,
-        rentAmount: request.rentAmount,
+        rentAmount: lockRequest.rentAmount,
       });
 
       await manager.save(lease);
 
-      request.status = RentalRequestStatus.APPROVED;
-      request.leaseId = lease.id;
+      lockRequest.status = RentalRequestStatus.APPROVED;
+      lockRequest.leaseId = lease.id;
 
-      await manager.save(request);
+      await manager.save(lockRequest);
 
       await this.notifications.create(manager, {
-        recipientId: request.tenantId,
+        recipientId: lockRequest.tenantId,
         type: NotificationType.RENTAL_REQUEST_APPROVED,
         title: 'Rental request approved',
         message: `Your rental request for unit ${unit.unitNumber} has been approved. A lease is now pending.`,
         relatedEntityType: 'RentalRequest',
-        relatedEntityId: request.id,
+        relatedEntityId: lockRequest.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.RENTAL_REQUEST_APPROVED,
         entity: 'RentalRequest',
-        entityId: request.id,
+        entityId: lockRequest.id,
         metadata: {
           leaseId: lease.id,
           unitId: unit.id,
@@ -400,7 +402,7 @@ export class RentalRequestsService {
         ipAddress: ip,
       });
 
-      return request.id;
+      return lockRequest.id;
     });
 
     return RentalRequestResponseDto.fromEntity(await this.findOne(requestId));
@@ -423,40 +425,40 @@ export class RentalRequestsService {
     ip?: string,
   ): Promise<RentalRequestResponseDto> {
     const requestId = await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockRequest(manager, id);
-      const unit = await this.loadManagedUnit(manager, actor, request);
+      const lockRequest = await this.lockRequest(manager, id);
+      const unit = await this.loadManagedUnit(manager, actor, lockRequest);
 
-      if (request.status !== RentalRequestStatus.PENDING) {
+      if (lockRequest.status !== RentalRequestStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.RENTAL_REQUEST_NOT_PENDING,
           message: 'Only a PENDING rental request can be rejected',
         });
       }
 
-      request.status = RentalRequestStatus.REJECTED;
-      await manager.save(request);
+      lockRequest.status = RentalRequestStatus.REJECTED;
+      await manager.save(lockRequest);
 
       await this.notifications.create(manager, {
-        recipientId: request.tenantId,
+        recipientId: lockRequest.tenantId,
         type: NotificationType.RENTAL_REQUEST_REJECTED,
         title: 'Rental request rejected',
         message: `Your rental request for unit ${unit.unitNumber} has been rejected.`,
         relatedEntityType: 'RentalRequest',
-        relatedEntityId: request.id,
+        relatedEntityId: lockRequest.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.RENTAL_REQUEST_REJECTED,
         entity: 'RentalRequest',
-        entityId: request.id,
+        entityId: lockRequest.id,
         metadata: {
           unitId: unit.id,
         },
         ipAddress: ip,
       });
 
-      return request.id;
+      return lockRequest.id;
     });
 
     return RentalRequestResponseDto.fromEntity(await this.findOne(requestId));
@@ -481,9 +483,9 @@ export class RentalRequestsService {
     ip?: string,
   ): Promise<RentalRequestResponseDto> {
     const requestId = await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockRequest(manager, id);
+      const lockRequest = await this.lockRequest(manager, id);
 
-      if (request.tenantId !== actor.id) {
+      if (lockRequest.tenantId !== actor.id) {
         throw new ForbiddenException({
           code: ErrorCode.RENTAL_REQUEST_ACCESS_DENIED,
           message: 'You do not have access to this request',
@@ -491,7 +493,7 @@ export class RentalRequestsService {
       }
 
       const unit = await manager.findOne(Unit, {
-        where: { id: request.unitId },
+        where: { id: lockRequest.unitId },
         relations: { property: true },
       });
 
@@ -502,15 +504,15 @@ export class RentalRequestsService {
         });
       }
 
-      if (request.status !== RentalRequestStatus.PENDING) {
+      if (lockRequest.status !== RentalRequestStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.RENTAL_REQUEST_NOT_PENDING,
           message: 'Only a PENDING rental request can be cancelled',
         });
       }
 
-      request.status = RentalRequestStatus.CANCELLED;
-      await manager.save(request);
+      lockRequest.status = RentalRequestStatus.CANCELLED;
+      await manager.save(lockRequest);
 
       await this.notifications.create(manager, {
         recipientId: unit.property.ownerId,
@@ -518,28 +520,24 @@ export class RentalRequestsService {
         title: 'Rental request withdrawn',
         message: `A tenant withdrew their rental request for unit ${unit.unitNumber}.`,
         relatedEntityType: 'RentalRequest',
-        relatedEntityId: request.id,
+        relatedEntityId: lockRequest.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.RENTAL_REQUEST_CANCELLED,
         entity: 'RentalRequest',
-        entityId: request.id,
+        entityId: lockRequest.id,
         metadata: { unitId: unit.id },
         ipAddress: ip,
       });
 
-      return request.id;
+      return lockRequest.id;
     });
 
     return RentalRequestResponseDto.fromEntity(await this.findOne(requestId));
   }
 
-  /**
-   * Locks the request row.
-   * No joins are used because PostgreSQL FOR UPDATE should target the request row only.
-   */
   private async lockRequest(
     manager: EntityManager,
     id: string,
@@ -560,10 +558,6 @@ export class RentalRequestsService {
     return request;
   }
 
-  /**
-   * Loads the request's Unit + Property and verifies that the actor
-   * can manage the property.
-   */
   private async loadManagedUnit(
     manager: EntityManager,
     actor: User,
