@@ -31,10 +31,12 @@ export class JwtAuthGuard implements CanActivate {
 
     const request = context.switchToHttp().getRequest<AuthenticatedRequest>();
     const token = this.extractToken(request);
-    if (!token) throw new UnauthorizedException({
-      code: ErrorCode.ACCESS_TOKEN_MISSING,
-      message: 'Missing access token',
-    });
+    if (!token) {
+      throw new UnauthorizedException({
+        code: ErrorCode.ACCESS_TOKEN_MISSING,
+        message: 'Missing access token',
+      });
+    }
 
     let payload: AccessTokenPayload;
     try {

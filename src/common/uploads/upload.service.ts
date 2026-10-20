@@ -25,24 +25,24 @@ export class UploadService {
   }
 
   async uploadImages(
-    files: Express.Multer.File[],
+    images: Express.Multer.File[],
     folder: string,
     maxCount: number,
   ): Promise<ImageRef[]> {
-    if (!files.length)
+    if (!images.length)
       throw new BadRequestException({
         code: ErrorCode.IMAGE_REQUIRED,
         message: 'At least one image is required',
       });
 
-    if (files.length > maxCount) {
+    if (images.length > maxCount) {
       throw new BadRequestException({
         code: ErrorCode.IMAGE_LIMIT_EXCEEDED,
         message: `A maximum of ${maxCount} images is allowed`,
       });
     }
 
-    return Promise.all(files.map((file) => this.uploadOne(file, folder)));
+    return Promise.all(images.map((image) => this.uploadOne(image, folder)));
   }
 
   async deleteImages(images: ImageRef[]): Promise<void> {
@@ -56,24 +56,24 @@ export class UploadService {
   }
 
   private async uploadOne(
-    file: Express.Multer.File,
+    image: Express.Multer.File,
     folder: string,
   ): Promise<ImageRef> {
-    if (file.size > MAX_IMAGE_SIZE_BYTES) {
+    if (image.size > MAX_IMAGE_SIZE_BYTES) {
       throw new BadRequestException({
         code: ErrorCode.IMAGE_TOO_LARGE,
-        message: `${file.originalname} exceeds the ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024}MB limit`,
+        message: `${image.originalname} exceeds the ${MAX_IMAGE_SIZE_BYTES / 1024 / 1024}MB limit`,
       });
     }
 
-    const detected = await fileTypeFromBuffer(file.buffer);
+    const detected = await fileTypeFromBuffer(image.buffer);
     if (
       !detected ||
       !ALLOWED_IMAGE_MIME_TYPES.includes(detected.mime as AllowedMime)
     ) {
       throw new BadRequestException({
         code: ErrorCode.IMAGE_INVALID,
-        message: `${file.originalname} is not a valid image (jpeg, png or webp)`,
+        message: `${image.originalname} is not a valid image (jpeg, png or webp)`,
       });
     }
 
@@ -91,7 +91,7 @@ export class UploadService {
         },
       );
 
-      Readable.from(file.buffer).pipe(stream);
+      Readable.from(image.buffer).pipe(stream);
     });
   }
 }

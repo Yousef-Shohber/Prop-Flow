@@ -29,7 +29,7 @@ export class RedisService implements OnModuleDestroy {
   async setJson(
     key: string,
     value: unknown,
-    ttlSeconds: number,
+    ttlSeconds: number = 60,
   ): Promise<void> {
     await this.client.set(key, JSON.stringify(value), 'EX', ttlSeconds);
   }

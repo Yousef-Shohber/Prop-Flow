@@ -58,12 +58,10 @@ const EXPIRE = `
     RETURNING "recipientId", type, title, message
   )
   SELECT
-    (SELECT count(*) FROM expired)::int          AS "expiredLeases",
-    (SELECT count(*) FROM released)::int         AS "releasedUnits",
-    (SELECT count(*) FROM expired_requests)::int AS "expiredRequests",
-    (
-      SELECT coalesce(json_agg(n), '[]'::json) FROM request_notifications n
-    ) AS "requestNotifications"
+    (SELECT count(*) FROM expired)::int                                     AS "expiredLeases",
+    (SELECT count(*) FROM released)::int                                    AS "releasedUnits",
+    (SELECT count(*) FROM expired_requests)::int                            AS "expiredRequests",
+    (SELECT coalesce(json_agg(n), '[]'::json) FROM request_notifications n) AS "requestNotifications"
 `;
 
 @Injectable()
