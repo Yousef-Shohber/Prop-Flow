@@ -28,7 +28,7 @@ import { LeaseExpirationService } from '../common/lease-expiration/lease-expirat
 import { DataSource } from 'typeorm';
 import { AuditAction } from '../audit-logs/enums/audit-action.enum.js';
 import { AuditLogsService } from '../audit-logs/audit-logs.service.js';
-import { createHash } from 'node:crypto';
+import { sha256 } from '../common/utils/hash.util.js';
 import { CacheInvalidationService } from '../common/cache/cache-invalidation.service.js';
 import { UNITS_SEARCH_CACHE_TTL_SECONDS } from '../common/cache/cache.constants.js';
 import { RedisService } from '../common/redis/redis.service.js';
@@ -82,11 +82,12 @@ export class UnitsService {
       relations: { property: true },
     });
 
-    if (!unit?.property)
+    if (!unit?.property) {
       throw new NotFoundException({
         code: ErrorCode.UNIT_NOT_FOUND,
         message: 'Unit not found',
       });
+    }
 
     return unit;
   }
@@ -318,35 +319,35 @@ export class UnitsService {
 
     const { saved, changed } = await this.dataSource.transaction(
       async (manager) => {
-        const current = await manager
+        const lockUnit = await manager
           .createQueryBuilder(Unit, 'unit')
           .setLock('pessimistic_write')
           .where('unit.id = :id', { id: unit.id })
           .getOne();
 
-        if (!current) {
+        if (!lockUnit) {
           throw new NotFoundException({
             code: ErrorCode.UNIT_NOT_FOUND,
             message: 'Unit not found',
           });
         }
 
-        this.assertNotRented(current, 'updated');
+        this.assertNotRented(lockUnit, 'updated');
 
-        const changes = getChangedFields(current, dto);
+        const changes = getChangedFields(lockUnit, dto);
         if (!Object.keys(changes).length) {
-          return { saved: current, changed: false };
+          return { saved: lockUnit, changed: false };
         }
 
-        manager.merge(Unit, current, dto);
-        const result = await manager.save(Unit, current);
+        manager.merge(Unit, lockUnit, dto);
+        const result = await manager.save(Unit, lockUnit);
 
         await this.auditLogsService.record(manager, {
           userId: actor.id,
           action: AuditAction.UNIT_UPDATED,
           entity: 'Unit',
-          entityId: current.id,
-          metadata: { propertyId: current.propertyId, changes },
+          entityId: lockUnit.id,
+          metadata: { propertyId: lockUnit.propertyId, changes },
           ipAddress: ip,
         });
 
@@ -374,22 +375,23 @@ export class UnitsService {
     const unit = await this.findForActor(actor, id);
 
     await this.dataSource.transaction(async (manager) => {
-      const currentUnit = await manager
+      const lockUnit = await manager
         .createQueryBuilder(Unit, 'unit')
         .where('unit.id = :id', { id: unit.id })
         .setLock('pessimistic_write')
         .getOne();
-      if (!currentUnit) {
+
+      if (!lockUnit) {
         throw new NotFoundException({
           code: ErrorCode.UNIT_NOT_FOUND,
           message: 'Unit not found',
         });
       }
 
-      this.assertNotRented(currentUnit, 'removed');
-      await this.assertNoHistory(manager, currentUnit.id);
+      this.assertNotRented(lockUnit, 'removed');
+      await this.assertNoHistory(manager, lockUnit.id);
 
-      await manager.remove(Unit, currentUnit);
+      await manager.remove(Unit, lockUnit);
 
       await this.auditLogsService.record(manager, {
         userId: actor.id,
@@ -430,6 +432,7 @@ export class UnitsService {
         message: 'A rented unit can only change status through the lease flow',
       });
     }
+
     if (MANUAL_TRANSITIONS[unit.status] !== status) {
       throw new ConflictException({
         code: ErrorCode.UNIT_STATUS_TRANSITION_INVALID,
@@ -522,13 +525,13 @@ export class UnitsService {
    */
   async removeImage(actor: User, id: string, publicId: string): Promise<Unit> {
     const unit = await this.findForActor(actor, id);
-
     const image = unit.images.find((img) => img.publicId === publicId);
-    if (!image)
+    if (!image) {
       throw new NotFoundException({
         code: ErrorCode.IMAGE_NOT_FOUND,
         message: 'Image not found on this unit',
       });
+    }
 
     const originalImages = unit.images;
     unit.images = unit.images.filter((img) => img.publicId !== publicId);
@@ -553,15 +556,6 @@ export class UnitsService {
     return saved;
   }
 
-  private assertNotRented(unit: Unit, action: 'updated' | 'removed'): void {
-    if (unit.status === UnitStatus.RENTED) {
-      throw new ConflictException({
-        code: ErrorCode.UNIT_RENTED,
-        message: `A rented unit cannot be ${action}`,
-      });
-    }
-  }
-
   private hasCurrentLease(tenantId: string, unitId: string): Promise<boolean> {
     return this.dataSource.getRepository(Lease).exists({
       where: {
@@ -570,6 +564,15 @@ export class UnitsService {
         status: In([LeaseStatus.PENDING, LeaseStatus.ACTIVE]),
       },
     });
+  }
+
+  private assertNotRented(unit: Unit, action: 'updated' | 'removed'): void {
+    if (unit.status === UnitStatus.RENTED) {
+      throw new ConflictException({
+        code: ErrorCode.UNIT_RENTED,
+        message: `A rented unit cannot be ${action}`,
+      });
+    }
   }
 
   private buildSearchCacheKey(actor: User, query: ListUnitsQueryDto): string {
@@ -596,9 +599,7 @@ export class UnitsService {
       sortBy: query.sortBy ?? null,
       sortOrder: query.sortOrder,
     };
-    const hash = createHash('sha256')
-      .update(JSON.stringify(canonical))
-      .digest('hex');
+    const hash = sha256(JSON.stringify(canonical));
     return `units:search:${hash}`;
   }
 
