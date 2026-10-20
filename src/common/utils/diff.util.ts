@@ -5,12 +5,12 @@ export interface FieldChange {
 
 export function getChangedFields<T extends object>(
   current: T,
-  patch: Partial<T>,
+  dto: Partial<T>,
 ): Record<string, FieldChange> {
   const changes: Record<string, FieldChange> = {};
 
-  for (const key of Object.keys(patch) as (keyof T & string)[]) {
-    const after = patch[key];
+  for (const key of Object.keys(dto) as (keyof T & string)[]) {
+    const after = dto[key];
     if (after === undefined) continue;
 
     const before = current[key];

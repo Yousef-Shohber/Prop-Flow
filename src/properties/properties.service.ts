@@ -249,31 +249,31 @@ export class PropertiesService {
 
     const { saved, changed } = await this.dataSource.transaction(
       async (manager) => {
-        const current = await manager.findOne(Property, {
+        const lockProperty = await manager.findOne(Property, {
           where: { id: property.id },
           lock: { mode: 'pessimistic_write' },
         });
 
-        if (!current) {
+        if (!lockProperty) {
           throw new NotFoundException({
             code: ErrorCode.PROPERTY_NOT_FOUND,
             message: 'Property not found',
           });
         }
 
-        const changes = getChangedFields(current, dto);
+        const changes = getChangedFields(lockProperty, dto);
         if (!Object.keys(changes).length) {
-          return { saved: current, changed: false };
+          return { saved: lockProperty, changed: false };
         }
 
-        manager.merge(Property, current, dto);
-        const result = await manager.save(Property, current);
+        manager.merge(Property, lockProperty, dto);
+        const result = await manager.save(Property, lockProperty);
 
         await this.auditLogsService.record(manager, {
           userId: actor.id,
           action: AuditAction.PROPERTY_UPDATED,
           entity: 'Property',
-          entityId: current.id,
+          entityId: lockProperty.id,
           metadata: { changes },
           ipAddress: ip,
         });
@@ -477,14 +477,14 @@ export class PropertiesService {
   ): Promise<Property> {
     const property = await this.findForActor(actor, id);
     const image = property.images.find((img) => img.publicId === publicId);
-    if (!image)
+    if (!image) {
       throw new NotFoundException({
         code: ErrorCode.IMAGE_NOT_FOUND,
         message: 'Image not found on this property',
       });
+    }
 
     const originalImages = property.images;
-
     property.images = property.images.filter(
       (img) => img.publicId !== publicId,
     );
