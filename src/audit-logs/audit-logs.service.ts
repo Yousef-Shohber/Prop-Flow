@@ -45,6 +45,32 @@ export class AuditLogsService {
   }
 
   /**
+   * Record several audit logs in one insert.
+   * @param manager Transaction manager used to persist the audit logs.
+   * @param items Audit information, one entry per log. An empty list is a no-op.
+   */
+  async recordMany(
+    manager: EntityManager,
+    items: RecordAuditLogData[],
+  ): Promise<void> {
+    if (!items.length) return;
+
+    const logs = manager.create(
+      AuditLog,
+      items.map((data) => ({
+        userId: data.userId,
+        action: data.action,
+        entity: data.entity,
+        entityId: data.entityId,
+        metadata: data.metadata ?? null,
+        ipAddress: data.ipAddress ?? null,
+      })),
+    );
+
+    await manager.save(AuditLog, logs);
+  }
+
+  /**
    * Retrieve audit logs with optional filtering and pagination.
    * @param query Pagination and filtering options.
    * @returns Paginated audit logs matching the provided filters.

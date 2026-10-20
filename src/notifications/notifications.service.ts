@@ -128,6 +128,37 @@ export class NotificationsService {
   }
 
   /**
+   * Create several different notifications in one insert.
+   * Unlike `createMany`, each item has its own recipient, text and related
+   * entity. An empty list is a no-op. Called inside a business transaction,
+   * like `create`.
+   * @param manager Transaction manager used to insert the notifications.
+   * @param items Notification data, one entry per notification.
+   */
+  async createBatch(
+    manager: EntityManager,
+    items: CreateNotificationData[],
+  ): Promise<void> {
+    if (!items.length) return;
+
+    await manager.insert(
+      Notification,
+      items.map((item) => ({
+        recipientId: item.recipientId,
+        type: item.type,
+        title: item.title,
+        message: item.message,
+        relatedEntityType: item.relatedEntityType ?? null,
+        relatedEntityId: item.relatedEntityId ?? null,
+      })),
+    );
+
+    for (const item of items) {
+      this.queueEmail(manager, item.recipientId, item);
+    }
+  }
+
+  /**
    * Get the authenticated user's notifications.
    * @param actor Authenticated user requesting the notifications.
    * @param query Pagination and unread filter options.

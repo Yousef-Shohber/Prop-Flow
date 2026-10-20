@@ -12,10 +12,6 @@ import { User } from '../../users/entities/user.entity.js';
 import { LeaseRenewalRequestStatus } from '../enums/lease-renewal-request-status.enum.js';
 import { Lease } from './lease.entity.js';
 
-/**
- * A tenant's request to extend an ACTIVE lease to a later end date.
- * At most one request per lease can be PENDING at a time.
- */
 @Entity('lease_renewal_requests')
 @Index('UQ_lease_renewal_pending_lease', ['leaseId'], {
   unique: true,

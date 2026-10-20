@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { LeaseExpirationService } from '../common/lease-expiration/lease-expiration.service.js';
 import {
   Paginated,
@@ -138,7 +138,9 @@ export class LeasesService {
       .andWhere('property."deletedAt" IS NULL');
 
     if (actor.role === UserRole.TENANT) {
-      queryBuilder.andWhere('lease.tenantId = :selfId', { selfId: actor.id });
+      queryBuilder.andWhere('lease.tenantId = :selfId', {
+        selfId: actor.id,
+      });
     } else if (actor.role === UserRole.OWNER) {
       queryBuilder.andWhere(
         'unit.propertyId IN (SELECT id FROM properties WHERE "ownerId" = :ownerId AND "deletedAt" IS NULL)',
@@ -147,9 +149,13 @@ export class LeasesService {
     }
 
     if (query.status)
-      queryBuilder.andWhere('lease.status = :status', { status: query.status });
+      queryBuilder.andWhere('lease.status = :status', {
+        status: query.status,
+      });
     if (query.unitId)
-      queryBuilder.andWhere('lease.unitId = :unitId', { unitId: query.unitId });
+      queryBuilder.andWhere('lease.unitId = :unitId', {
+        unitId: query.unitId,
+      });
     if (query.tenantId)
       queryBuilder.andWhere('lease.tenantId = :tenantId', {
         tenantId: query.tenantId,
@@ -217,20 +223,20 @@ export class LeasesService {
     }
 
     return this.dataSource.transaction(async (manager) => {
-      const lockedUnit = await manager
+      const lockUnit = await manager
         .createQueryBuilder(Unit, 'unit')
         .setLock('pessimistic_write')
         .where('unit.id = :id', { id: unit.id })
         .getOne();
 
-      if (!lockedUnit) {
+      if (!lockUnit) {
         throw new NotFoundException({
           code: ErrorCode.UNIT_NOT_FOUND,
           message: 'Unit not found',
         });
       }
 
-      if (lockedUnit.status !== UnitStatus.AVAILABLE) {
+      if (lockUnit.status !== UnitStatus.AVAILABLE) {
         throw new ConflictException({
           code: ErrorCode.UNIT_NOT_AVAILABLE,
           message: 'The unit is not AVAILABLE',
@@ -239,12 +245,12 @@ export class LeasesService {
 
       const lease = manager.create(Lease, {
         tenantId: tenant.id,
-        unitId: lockedUnit.id,
+        unitId: lockUnit.id,
         startDate: dto.startDate,
         endDate: dto.endDate,
         notes: dto.notes ?? null,
         status: LeaseStatus.PENDING,
-        rentAmount: lockedUnit.rentAmount,
+        rentAmount: lockUnit.rentAmount,
       });
       const saved = await manager.save(lease);
 
@@ -252,7 +258,7 @@ export class LeasesService {
         recipientId: tenant.id,
         type: NotificationType.LEASE_CREATED,
         title: 'New lease created',
-        message: `A lease for unit ${lockedUnit.unitNumber} has been created for you.`,
+        message: `A lease for unit ${lockUnit.unitNumber} has been created for you.`,
         relatedEntityType: 'Lease',
         relatedEntityId: saved.id,
       });
@@ -326,13 +332,13 @@ export class LeasesService {
     await this.leaseExpiration.run();
 
     const activated = await this.dataSource.transaction(async (manager) => {
-      const lease = await manager
+      const lockLease = await manager
         .createQueryBuilder(Lease, 'lease')
         .setLock('pessimistic_write')
         .where('lease.id = :id', { id })
         .getOne();
 
-      if (!lease) {
+      if (!lockLease) {
         throw new NotFoundException({
           code: ErrorCode.LEASE_NOT_FOUND,
           message: 'Lease not found',
@@ -340,7 +346,7 @@ export class LeasesService {
       }
 
       const unit = await manager.findOne(Unit, {
-        where: { id: lease.unitId },
+        where: { id: lockLease.unitId },
         relations: { property: true },
       });
 
@@ -364,7 +370,7 @@ export class LeasesService {
         });
       }
 
-      if (lease.status !== LeaseStatus.PENDING) {
+      if (lockLease.status !== LeaseStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.LEASE_NOT_PENDING,
           message: 'Only a PENDING lease can be activated',
@@ -373,96 +379,111 @@ export class LeasesService {
 
       const today = todayIso();
 
-      if (lease.endDate < today) {
+      if (lockLease.endDate < today) {
         throw new ConflictException({
           code: ErrorCode.LEASE_PERIOD_ENDED,
-          message: `The lease period ended on ${lease.endDate}; terminate it and create a new lease`,
+          message: `The lease period ended on ${lockLease.endDate}; terminate it and create a new lease`,
         });
       }
 
-      if (lease.startDate > today) {
+      if (lockLease.startDate > today) {
         throw new ConflictException({
           code: ErrorCode.LEASE_NOT_STARTED,
-          message: `The lease starts on ${lease.startDate}; it can only be activated from its start date`,
+          message: `The lease starts on ${lockLease.startDate}; it can only be activated from its start date`,
         });
       }
 
-      const competingRequests = await manager
-        .createQueryBuilder(RentalRequest, 'request')
-        .setLock('pessimistic_write')
-        .where('request.unitId = :unitId', { unitId: lease.unitId })
-        .andWhere('request.status = :status', {
-          status: RentalRequestStatus.PENDING,
-        })
-        .andWhere('request.startDate <= :endDate', { endDate: lease.endDate })
-        .andWhere('request.endDate >= :startDate', { startDate: lease.startDate })
-        .orderBy('request.id', 'ASC')
-        .getMany();
-
-      const lockedUnit = await manager
+      const lockUnit = await manager
         .createQueryBuilder(Unit, 'unit')
         .setLock('pessimistic_write')
         .where('unit.id = :id', { id: unit.id })
         .getOne();
 
-      if (!lockedUnit || lockedUnit.status !== UnitStatus.AVAILABLE) {
+      if (!lockUnit || lockUnit.status !== UnitStatus.AVAILABLE) {
         throw new ConflictException({
           code: ErrorCode.UNIT_NOT_AVAILABLE,
           message: 'The unit is not AVAILABLE',
         });
       }
 
-      lease.status = LeaseStatus.ACTIVE;
-      lockedUnit.status = UnitStatus.RENTED;
+      lockLease.status = LeaseStatus.ACTIVE;
+      lockUnit.status = UnitStatus.RENTED;
 
-      await manager.save(lease);
-      await manager.save(lockedUnit);
+      await manager.save(lockLease);
+      await manager.save(lockUnit);
 
-      for (const request of competingRequests) {
-        request.status = RentalRequestStatus.REJECTED;
-        await manager.save(request);
+      const competingRequests = await manager
+        .createQueryBuilder(RentalRequest, 'request')
+        .setLock('pessimistic_write')
+        .where('request.unitId = :unitId', {
+          unitId: lockLease.unitId,
+        })
+        .andWhere('request.status = :status', {
+          status: RentalRequestStatus.PENDING,
+        })
+        .andWhere('request.startDate <= :endDate', {
+          endDate: lockLease.endDate,
+        })
+        .andWhere('request.endDate >= :startDate', {
+          startDate: lockLease.startDate,
+        })
+        .orderBy('request.id', 'ASC')
+        .getMany();
 
-        await this.notifications.create(manager, {
-          recipientId: request.tenantId,
-          type: NotificationType.RENTAL_REQUEST_REJECTED,
-          title: 'Rental request rejected',
-          message: `Your rental request for unit ${lockedUnit.unitNumber} (${request.startDate} to ${request.endDate}) was rejected because the unit was rented to another tenant for an overlapping period.`,
-          relatedEntityType: 'RentalRequest',
-          relatedEntityId: request.id,
-        });
+      if (competingRequests.length) {
+        await manager.update(
+          RentalRequest,
+          { id: In(competingRequests.map((request) => request.id)) },
+          { status: RentalRequestStatus.REJECTED },
+        );
 
-        await this.auditLogs.record(manager, {
-          userId: actor.id,
-          action: AuditAction.RENTAL_REQUEST_REJECTED,
-          entity: 'RentalRequest',
-          entityId: request.id,
-          metadata: {
-            reason: 'COMPETING_LEASE_ACTIVATED',
-            leaseId: lease.id,
-            unitId: lockedUnit.id,
-          },
-          ipAddress: ip,
-        });
+        await this.notifications.createBatch(
+          manager,
+          competingRequests.map((request) => ({
+            recipientId: request.tenantId,
+            type: NotificationType.RENTAL_REQUEST_REJECTED,
+            title: 'Rental request rejected',
+            message: `Your rental request for unit ${lockUnit.unitNumber} (${request.startDate} to ${request.endDate}) was rejected because the unit was rented to another tenant for an overlapping period.`,
+            relatedEntityType: 'RentalRequest',
+            relatedEntityId: request.id,
+          })),
+        );
+
+        await this.auditLogs.recordMany(
+          manager,
+          competingRequests.map((request) => ({
+            userId: actor.id,
+            action: AuditAction.RENTAL_REQUEST_REJECTED,
+            entity: 'RentalRequest',
+            entityId: request.id,
+            metadata: {
+              reason: 'COMPETING_LEASE_ACTIVATED',
+              leaseId: lockLease.id,
+              unitId: lockUnit.id,
+            },
+            ipAddress: ip,
+          })),
+        );
       }
 
       await this.notifications.create(manager, {
-        recipientId: lease.tenantId,
+        recipientId: lockLease.tenantId,
         type: NotificationType.LEASE_ACTIVATED,
         title: 'Lease activated',
-        message: `Your lease for unit ${lockedUnit.unitNumber} is now active.`,
+        message: `Your lease for unit ${lockUnit.unitNumber} is now active.`,
         relatedEntityType: 'Lease',
-        relatedEntityId: lease.id,
+        relatedEntityId: lockLease.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.LEASE_ACTIVATED,
         entity: 'Lease',
-        entityId: lease.id,
+        entityId: lockLease.id,
         ipAddress: ip,
       });
 
-      return lease;
+      return lockLease;
     });
 
     await this.cache.invalidateUnitsAndDashboard();
@@ -485,13 +506,13 @@ export class LeasesService {
     await this.leaseExpiration.run();
 
     const terminated = await this.dataSource.transaction(async (manager) => {
-      const lease = await manager
+      const lockLease = await manager
         .createQueryBuilder(Lease, 'lease')
         .setLock('pessimistic_write')
         .where('lease.id = :id', { id })
         .getOne();
 
-      if (!lease) {
+      if (!lockLease) {
         throw new NotFoundException({
           code: ErrorCode.LEASE_NOT_FOUND,
           message: 'Lease not found',
@@ -499,7 +520,7 @@ export class LeasesService {
       }
 
       const unit = await manager.findOne(Unit, {
-        where: { id: lease.unitId },
+        where: { id: lockLease.unitId },
         relations: { property: true },
       });
 
@@ -517,8 +538,8 @@ export class LeasesService {
         });
 
       if (
-        lease.status !== LeaseStatus.PENDING &&
-        lease.status !== LeaseStatus.ACTIVE
+        lockLease.status !== LeaseStatus.PENDING &&
+        lockLease.status !== LeaseStatus.ACTIVE
       ) {
         throw new ConflictException({
           code: ErrorCode.LEASE_NOT_TERMINABLE,
@@ -526,13 +547,13 @@ export class LeasesService {
         });
       }
 
-      const wasActive = lease.status === LeaseStatus.ACTIVE;
-      lease.status = LeaseStatus.TERMINATED;
+      const wasActive = lockLease.status === LeaseStatus.ACTIVE;
+      lockLease.status = LeaseStatus.TERMINATED;
 
-      await manager.save(lease);
+      await manager.save(lockLease);
       await manager.update(
         LeaseRenewalRequest,
-        { leaseId: lease.id, status: LeaseRenewalRequestStatus.PENDING },
+        { leaseId: lockLease.id, status: LeaseRenewalRequestStatus.PENDING },
         { status: LeaseRenewalRequestStatus.CANCELLED },
       );
       if (wasActive) {
@@ -540,23 +561,23 @@ export class LeasesService {
       }
 
       await this.notifications.create(manager, {
-        recipientId: lease.tenantId,
+        recipientId: lockLease.tenantId,
         type: NotificationType.LEASE_TERMINATED,
         title: 'Lease terminated',
         message: `Your lease for unit ${unit.unitNumber} has been terminated.`,
         relatedEntityType: 'Lease',
-        relatedEntityId: lease.id,
+        relatedEntityId: lockLease.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.LEASE_TERMINATED,
         entity: 'Lease',
-        entityId: lease.id,
+        entityId: lockLease.id,
         ipAddress: ip,
       });
 
-      return lease;
+      return lockLease;
     });
 
     await this.cache.invalidateUnitsAndDashboard();
@@ -595,13 +616,13 @@ export class LeasesService {
     }
 
     return this.dataSource.transaction(async (manager) => {
-      const lease = await manager
+      const lockLease = await manager
         .createQueryBuilder(Lease, 'lease')
         .setLock('pessimistic_write')
         .where('lease.id = :id', { id })
         .getOne();
 
-      if (!lease) {
+      if (!lockLease) {
         throw new NotFoundException({
           code: ErrorCode.LEASE_NOT_FOUND,
           message: 'Lease not found',
@@ -609,7 +630,7 @@ export class LeasesService {
       }
 
       const unit = await manager.findOne(Unit, {
-        where: { id: lease.unitId },
+        where: { id: lockLease.unitId },
         relations: { property: true },
       });
 
@@ -633,7 +654,14 @@ export class LeasesService {
         });
       }
 
-      return this.applyRenewal(manager, actor, lease, unit, dto.endDate, ip);
+      return this.applyRenewal(
+        manager,
+        actor,
+        lockLease,
+        unit,
+        dto.endDate,
+        ip,
+      );
     });
   }
 
