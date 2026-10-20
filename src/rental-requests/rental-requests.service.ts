@@ -592,10 +592,6 @@ export class RentalRequestsService {
     return unit;
   }
 
-  /**
-   * Checks for a PENDING/ACTIVE lease overlapping the requested range.
-   * Bounds are inclusive, matching the Lease exclusion constraint.
-   */
   private hasLeaseConflict(
     manager: EntityManager,
     unitId: string,
