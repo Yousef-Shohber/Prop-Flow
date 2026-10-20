@@ -35,14 +35,6 @@ import { LeasesService } from './leases.service.js';
 
 const RENEWAL_SORT_FIELDS = ['createdAt', 'requestedEndDate'] as const;
 
-/**
- * Tenant-initiated lease renewals.
- *
- * Lock order is always lease first, then renewal request (the lease
- * expiration sweep, termination and LeasesService.applyRenewal follow the same
- * order), so these flows cannot deadlock each other. Reject and cancel only
- * ever lock the request row.
- */
 @Injectable()
 export class LeaseRenewalRequestsService {
   constructor(
@@ -55,10 +47,6 @@ export class LeaseRenewalRequestsService {
     private readonly leaseExpiration: LeaseExpirationService,
   ) {}
 
-  /**
-   * Loads a renewal request with its tenant, lease, unit and property.
-   * @throws NotFoundException If the request or its property does not exist.
-   */
   private async findOne(id: string): Promise<LeaseRenewalRequest> {
     const request = await this.requestRepo.findOne({
       where: { id },
@@ -97,6 +85,8 @@ export class LeaseRenewalRequestsService {
   /**
    * Paginated list. TENANT: own requests. OWNER: requests for leases on owned
    * properties. ADMIN: all.
+   * @param actor The authenticated user requesting the properties.
+   * @param query Filtering, sorting, searching, and pagination options.
    */
   async findAll(
     actor: User,
@@ -118,7 +108,9 @@ export class LeaseRenewalRequestsService {
       .innerJoin('unit.property', 'property', 'property.deletedAt IS NULL');
 
     if (actor.role === UserRole.TENANT) {
-      queryBuilder.andWhere('request.tenantId = :selfId', { selfId: actor.id });
+      queryBuilder.andWhere('request.tenantId = :selfId', {
+        selfId: actor.id,
+      });
     } else if (actor.role === UserRole.OWNER) {
       queryBuilder.andWhere('property.ownerId = :ownerId', {
         ownerId: actor.id,
@@ -174,22 +166,20 @@ export class LeaseRenewalRequestsService {
     }
 
     const requestId = await this.dataSource.transaction(async (manager) => {
-      const lease = await this.lockLease(manager, dto.leaseId);
+      const lockLease = await this.lockLease(manager, dto.leaseId);
 
-      if (lease.tenantId !== actor.id) {
+      if (lockLease.tenantId !== actor.id) {
         throw new ForbiddenException('You do not have access to this lease');
       }
 
-      const unit = await this.loadUnit(manager, lease.unitId);
-
-      if (lease.status !== LeaseStatus.ACTIVE) {
+      if (lockLease.status !== LeaseStatus.ACTIVE) {
         throw new ConflictException({
           code: ErrorCode.LEASE_NOT_ACTIVE,
           message: 'Only an ACTIVE lease can be renewed',
         });
       }
 
-      if (dto.endDate <= lease.endDate) {
+      if (dto.endDate <= lockLease.endDate) {
         throw new BadRequestException({
           code: ErrorCode.RENEWAL_END_NOT_AFTER_CURRENT,
           message: 'endDate must be after the current end date of the lease',
@@ -197,7 +187,10 @@ export class LeaseRenewalRequestsService {
       }
 
       const hasPending = await manager.exists(LeaseRenewalRequest, {
-        where: { leaseId: lease.id, status: LeaseRenewalRequestStatus.PENDING },
+        where: {
+          leaseId: lockLease.id,
+          status: LeaseRenewalRequestStatus.PENDING,
+        },
       });
 
       if (hasPending) {
@@ -209,13 +202,15 @@ export class LeaseRenewalRequestsService {
 
       const saved = await manager.save(
         manager.create(LeaseRenewalRequest, {
-          leaseId: lease.id,
+          leaseId: lockLease.id,
           tenantId: actor.id,
           requestedEndDate: dto.endDate,
           message: dto.message ?? null,
           status: LeaseRenewalRequestStatus.PENDING,
         }),
       );
+
+      const unit = await this.loadUnit(manager, lockLease.unitId);
 
       await this.notifications.create(manager, {
         recipientId: unit.property.ownerId,
@@ -231,7 +226,7 @@ export class LeaseRenewalRequestsService {
         action: AuditAction.LEASE_RENEWAL_REQUESTED,
         entity: 'LeaseRenewalRequest',
         entityId: saved.id,
-        metadata: { leaseId: lease.id, requestedEndDate: dto.endDate },
+        metadata: { leaseId: lockLease.id, requestedEndDate: dto.endDate },
         ipAddress: ip,
       });
 
@@ -269,22 +264,24 @@ export class LeaseRenewalRequestsService {
       });
     }
 
-    const found = await this.requestRepo.findOne({
+    const renewalRequest = await this.requestRepo.findOne({
       where: { id },
       select: { id: true, leaseId: true },
     });
-    if (!found) throw new NotFoundException('Renewal request not found');
+    if (!renewalRequest) {
+      throw new NotFoundException('Renewal request not found');
+    }
 
     await this.dataSource.transaction(async (manager) => {
-      const lease = await this.lockLease(manager, found.leaseId);
-      const request = await this.lockRequest(manager, id);
-      const unit = await this.loadUnit(manager, lease.unitId);
+      const lockLease = await this.lockLease(manager, renewalRequest.leaseId);
+      const lockRequest = await this.lockRequest(manager, id);
+      const unit = await this.loadUnit(manager, lockLease.unitId);
 
       if (!canManageProperty(actor, unit.property)) {
         throw new ForbiddenException('You do not have access to this request');
       }
 
-      if (request.status !== LeaseRenewalRequestStatus.PENDING) {
+      if (lockRequest.status !== LeaseRenewalRequestStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.RENEWAL_REQUEST_NOT_PENDING,
           message: 'Only a PENDING renewal request can be approved',
@@ -294,11 +291,11 @@ export class LeaseRenewalRequestsService {
       await this.leases.applyRenewal(
         manager,
         actor,
-        lease,
+        lockLease,
         unit,
-        dto.endDate ?? request.requestedEndDate,
+        dto.endDate ?? lockRequest.requestedEndDate,
         ip,
-        request.id,
+        lockRequest.id,
       );
     });
 
@@ -317,41 +314,41 @@ export class LeaseRenewalRequestsService {
     ip?: string,
   ): Promise<LeaseRenewalRequestResponseDto> {
     await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockRequest(manager, id);
+      const lockRequest = await this.lockRequest(manager, id);
       const lease = await manager.findOne(Lease, {
-        where: { id: request.leaseId },
+        where: { id: lockRequest.leaseId },
       });
       if (!lease) throw new NotFoundException('Renewal request not found');
-      const unit = await this.loadUnit(manager, lease.unitId);
 
-      if (!canManageProperty(actor, unit.property)) {
-        throw new ForbiddenException('You do not have access to this request');
-      }
-
-      if (request.status !== LeaseRenewalRequestStatus.PENDING) {
+      if (lockRequest.status !== LeaseRenewalRequestStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.RENEWAL_REQUEST_NOT_PENDING,
           message: 'Only a PENDING renewal request can be rejected',
         });
       }
 
-      request.status = LeaseRenewalRequestStatus.REJECTED;
-      await manager.save(request);
+      const unit = await this.loadUnit(manager, lease.unitId);
+      if (!canManageProperty(actor, unit.property)) {
+        throw new ForbiddenException('You do not have access to this request');
+      }
+
+      lockRequest.status = LeaseRenewalRequestStatus.REJECTED;
+      await manager.save(lockRequest);
 
       await this.notifications.create(manager, {
-        recipientId: request.tenantId,
+        recipientId: lockRequest.tenantId,
         type: NotificationType.LEASE_RENEWAL_REJECTED,
         title: 'Lease renewal declined',
         message: `Your request to extend the lease for unit ${unit.unitNumber} was declined.`,
         relatedEntityType: 'LeaseRenewalRequest',
-        relatedEntityId: request.id,
+        relatedEntityId: lockRequest.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.LEASE_RENEWAL_REJECTED,
         entity: 'LeaseRenewalRequest',
-        entityId: request.id,
+        entityId: lockRequest.id,
         ipAddress: ip,
       });
     });
@@ -371,27 +368,28 @@ export class LeaseRenewalRequestsService {
     ip?: string,
   ): Promise<LeaseRenewalRequestResponseDto> {
     await this.dataSource.transaction(async (manager) => {
-      const request = await this.lockRequest(manager, id);
+      const lockRequest = await this.lockRequest(manager, id);
 
-      if (request.tenantId !== actor.id) {
+      if (lockRequest.tenantId !== actor.id) {
         throw new ForbiddenException('You do not have access to this request');
       }
 
       const lease = await manager.findOne(Lease, {
-        where: { id: request.leaseId },
+        where: { id: lockRequest.leaseId },
       });
       if (!lease) throw new NotFoundException('Renewal request not found');
-      const unit = await this.loadUnit(manager, lease.unitId);
 
-      if (request.status !== LeaseRenewalRequestStatus.PENDING) {
+      if (lockRequest.status !== LeaseRenewalRequestStatus.PENDING) {
         throw new ConflictException({
           code: ErrorCode.RENEWAL_REQUEST_NOT_PENDING,
           message: 'Only a PENDING renewal request can be cancelled',
         });
       }
 
-      request.status = LeaseRenewalRequestStatus.CANCELLED;
-      await manager.save(request);
+      lockRequest.status = LeaseRenewalRequestStatus.CANCELLED;
+      await manager.save(lockRequest);
+
+      const unit = await this.loadUnit(manager, lease.unitId);
 
       await this.notifications.create(manager, {
         recipientId: unit.property.ownerId,
@@ -399,14 +397,14 @@ export class LeaseRenewalRequestsService {
         title: 'Lease renewal request withdrawn',
         message: `A tenant withdrew their request to extend the lease for unit ${unit.unitNumber}.`,
         relatedEntityType: 'LeaseRenewalRequest',
-        relatedEntityId: request.id,
+        relatedEntityId: lockRequest.id,
       });
 
       await this.auditLogs.record(manager, {
         userId: actor.id,
         action: AuditAction.LEASE_RENEWAL_CANCELLED,
         entity: 'LeaseRenewalRequest',
-        entityId: request.id,
+        entityId: lockRequest.id,
         ipAddress: ip,
       });
     });
@@ -415,30 +413,30 @@ export class LeaseRenewalRequestsService {
   }
 
   private async lockLease(manager: EntityManager, id: string): Promise<Lease> {
-    const lease = await manager
+    const lockLease = await manager
       .createQueryBuilder(Lease, 'lease')
       .setLock('pessimistic_write')
       .where('lease.id = :id', { id })
       .getOne();
 
-    if (!lease) throw new NotFoundException('Lease not found');
+    if (!lockLease) throw new NotFoundException('Lease not found');
 
-    return lease;
+    return lockLease;
   }
 
   private async lockRequest(
     manager: EntityManager,
     id: string,
   ): Promise<LeaseRenewalRequest> {
-    const request = await manager
+    const lockRequest = await manager
       .createQueryBuilder(LeaseRenewalRequest, 'request')
       .setLock('pessimistic_write')
       .where('request.id = :id', { id })
       .getOne();
 
-    if (!request) throw new NotFoundException('Renewal request not found');
+    if (!lockRequest) throw new NotFoundException('Renewal request not found');
 
-    return request;
+    return lockRequest;
   }
 
   private async loadUnit(
